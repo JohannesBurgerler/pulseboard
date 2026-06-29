@@ -1,6 +1,14 @@
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { ddb, TABLE } from "./dynamo";
 import { scorePkForUser, scoreSk } from "./keys";
+import { allScorePks } from "./keys";
+
+export interface LeaderBoardEntry {
+  userId: string;
+  displayName: string;
+  score: number;
+}
 
 export interface SubmitScoreInput {
   appId: string;
@@ -31,4 +39,35 @@ export async function submitScore(input: SubmitScoreInput): Promise<void> {
       },
     }),
   );
+}
+
+export async function getTopNForShard(shardPk: string, n: number ): Promise<LeaderBoardEntry[]> {
+  const res = await ddb.send(
+    new QueryCommand({
+      TableName: TABLE,
+      IndexName: "GSI1_ScoreByShard",
+      KeyConditionExpression: "pk = :pk",
+      ExpressionAttributeValues: {":pk": shardPk},
+      ScanIndexForward: false,
+      Limit: n
+    })
+  );
+
+  return (res.Items ?? []).map((item) => ({
+    userId: String(item.sk).replace("USER#", ""),
+    displayName: item.displayName,
+    score: item.score,
+  }));
+
+}
+
+export async function getTopN(appId: string, gameId: string, n = 10): Promise<LeaderBoardEntry[]>
+{
+  const pkList = allScorePks(appId, gameId);
+  const perShard = await Promise.all(
+    pkList.map((item) => getTopNForShard(item, n))
+  );
+
+  return perShard.flat().sort((a , b) => b.score - a.score).slice(0, n);
+
 }
